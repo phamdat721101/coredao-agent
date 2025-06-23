@@ -1,4 +1,5 @@
 import { Bot, InputFile } from "grammy";
+import axios from "axios";
 
 import { Character } from "../characters";
 import { generateReply } from "../completions";
@@ -102,48 +103,92 @@ export class TelegramProvider {
         return;
       }
 
-      if (
-        ctx.chat.type === "private" ||
-        ctx.msg.text?.includes(this.character.telegramBotUsername) ||
-        ctx.message?.reply_to_message?.from?.username ===
-          this.character.telegramBotUsername
-      ) {
-        // Save user's message
-        saveChatMessage({
-          platform: "telegram",
-          platform_channel_id: ctx.chat.id.toString(),
-          platform_message_id: ctx.msg.message_id.toString(),
-          platform_user_id: ctx.from.id.toString(),
-          username: ctx.from.username,
-          message_content: telegramMessageToReplyTo,
-          message_type: "text",
-          is_bot_response: 0,
-        });
+      // --- Add command parsing for deploy/transfer ---
+      const [cmd, ...args] = telegramMessageToReplyTo.trim().split(/\s+/);
+      console.log(`Command: ${cmd}, Args: ${args.join(", ")}`);
 
-        const isAudio = ctx.msg.text?.toLowerCase().includes("!audio");
-        let cleanedMessage = telegramMessageToReplyTo;
-        if (isAudio && this.character.audioGenerationBehavior?.provider) {
-          cleanedMessage = telegramMessageToReplyTo
-            .toLowerCase()
-            .replace("!audio", "");
+      if (cmd === "deploy" || args[0] === "token") {
+        // Should be: const [tokenKeyword, name, symbol, initialSupply] = args;
+        // Fix:
+        const [tokenKeyword, name, symbol, initialSupply] = args;
+        if (!name || !symbol || !initialSupply) {
+          await ctx.reply(
+            "Usage: deploy token <name> <symbol> <initialSupply>",
+          );
+          return;
         }
-
-        const chatHistory = getChatHistory({
-          platform: "telegram",
-          chatId: ctx.chat.id.toString(),
-          userId: ctx.from.id.toString(),
-        });
-
-        const completion = await generateReply(
-          cleanedMessage,
-          this.character,
-          true,
-          chatHistory,
-        );
-
-        await this.sendResponse(ctx, completion.reply, isAudio);
-        await this.maybeSendSticker(ctx);
+        try {
+          const res = await axios.post("http://localhost:3000/erc20/deploy", {
+            name,
+            symbol,
+            initialSupply,
+          });
+          await ctx.reply(`Deployed ERC-20 at: ${res.data.contractAddress}`);
+        } catch (e: any) {
+          await ctx.reply(
+            `Failed to deploy token: ${e?.response?.data?.error || e.message}`,
+          );
+        }
+        return;
+      } else if (cmd === "transfer") {
+        const [contractAddress, to, amount] = args;
+        if (!contractAddress || !to || !amount) {
+          await ctx.reply(
+            "Usage: transfer <contractAddress> <toAddress> <amount>",
+          );
+          return;
+        }
+        try {
+          const res = await axios.post("http://localhost:3000/erc20/transfer", {
+            contractAddress,
+            to,
+            amount,
+          });
+          await ctx.reply(`Transfer tx hash: ${res.data.txHash}`);
+        } catch (e: any) {
+          await ctx.reply(
+            `Failed to transfer: ${e?.response?.data?.error || e.message}`,
+          );
+        }
+        return;
       }
+
+      // ...existing code for normal chat...
+      // Save user's message
+      saveChatMessage({
+        platform: "telegram",
+        platform_channel_id: ctx.chat.id.toString(),
+        platform_message_id: ctx.msg.message_id.toString(),
+        platform_user_id: ctx.from.id.toString(),
+        username: ctx.from.username,
+        message_content: telegramMessageToReplyTo,
+        message_type: "text",
+        is_bot_response: 0,
+      });
+
+      const isAudio = ctx.msg.text?.toLowerCase().includes("!audio");
+      let cleanedMessage = telegramMessageToReplyTo;
+      if (isAudio && this.character.audioGenerationBehavior?.provider) {
+        cleanedMessage = telegramMessageToReplyTo
+          .toLowerCase()
+          .replace("!audio", "");
+      }
+
+      const chatHistory = getChatHistory({
+        platform: "telegram",
+        chatId: ctx.chat.id.toString(),
+        userId: ctx.from.id.toString(),
+      });
+
+      const completion = await generateReply(
+        cleanedMessage,
+        this.character,
+        true,
+        chatHistory,
+      );
+
+      await this.sendResponse(ctx, completion.reply, isAudio);
+      await this.maybeSendSticker(ctx);
     } catch (e: any) {
       logger.error(`There was an error: ${e}`);
       logger.error("e.message", e.message);
